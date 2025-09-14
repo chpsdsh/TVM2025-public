@@ -1,11 +1,11 @@
 AddMul {
    
   AddExp
-    = AddExp "+" MulExp  -- plus
+    = AddExp "+" MulExp   -- plus
     | MulExp
 
   MulExp
-    = MulExp "*" PriExp  -- times
+    = MulExp "*" PriExp  -- mul
     | PriExp
 
   PriExp

@@ -9,7 +9,7 @@ const addMulCalc = {
         return arg0.calculate() + arg1.calculate();
     },
 
-    MulExp_times(arg0: any, _times: any, arg1: any) {
+    MulExp_mul(arg0: any, _times: any, arg1: any) {
         return arg0.calculate() * arg1.calculate();
     },
 
