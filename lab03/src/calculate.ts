@@ -45,31 +45,31 @@ const arithCalc = {
     },
 
     Unary_neg(this: any, _minus: any, u: any) {
-        return -((u as any).calculate(this.args.params) as number)
+        return -(u .calculate(this.args.params) as number)
     },
 
     Unary_prim(this: any, p: any) {
-        return (p as any).calculate(this.args.params)
+        return p.calculate(this.args.params)
     },
 
     Unary(this: any, n: any) {
-        return (n as any).calculate(this.args.params)
+        return n.calculate(this.args.params)
     },
 
     PriExp_paren(this: any, _lp: any, e: any, _rp: any) {
-        return (e as any).calculate(this.args.params)
+        return e.calculate(this.args.params)
     },
 
     PriExp(this: any, n: any) {
-        return (n as any).calculate(this.args.params)
+        return n.calculate(this.args.params)
     },
 
     AddOp(this: any, _tok: any) {
-        return (this as any).sourceString.charCodeAt(0)
+        return this.sourceString.charCodeAt(0)
     },
 
     MulOp(this: any, _tok: any) {
-        return (this as any).sourceString.charCodeAt(0)
+        return this.sourceString.charCodeAt(0)
     },
 
     variable(this: any, _head: any, _tail: any) {
@@ -79,7 +79,7 @@ const arithCalc = {
     },
 
     number(this: any, _digits: any) {
-        return Number((this as any).sourceString);
+        return Number(this.sourceString);
     },
 }
 
