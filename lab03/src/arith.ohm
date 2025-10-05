@@ -1,3 +1,14 @@
 Arithmetic {
-    // write rules here
+  Expr    = spaces AddExp spaces end   
+  AddExp  = MulExp (AddOp MulExp)*
+  MulExp  = Unary  (MulOp Unary)*
+  Unary   = "-" Unary  -- neg
+          | PriExp     -- prim
+  PriExp  = "(" AddExp ")"  -- paren
+          | variable
+          | number
+  AddOp   = "+" | "-"
+  MulOp   = "*" | "/"
+  variable = letter (letter | digit)*
+  number   = digit+
 }
