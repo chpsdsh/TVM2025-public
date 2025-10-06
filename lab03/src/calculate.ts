@@ -11,25 +11,21 @@ function fold(
     step: (acc: number, op: string, rhs: number) => number
 ): number {
     const params: any = this.args.params;
-    let acc = (first as any).calculate(params);
+    let acc = first .calculate(params);
 
-    const nOps = (ops as any).children.length;
-    const nRhss = (rhss as any).children.length;
+    const nOps = ops.children.length;
+    const nRhss = rhss.children.length;
     const n = Math.min(nOps, nRhss);
 
     for (let i = 0; i < n; i++) {
-        const op = (ops as any).child(i).sourceString as string;
-        const rhs = (rhss as any).child(i).calculate(params) as number;
+        const op = ops.child(i).sourceString as string;
+        const rhs = rhss.child(i).calculate(params) as number;
         acc = step(acc, op, rhs);
     }
     return acc;
 }
 
 const arithCalc = {
-    Expr(this: any, _leadSpaces: any, add: any, _trailSpaces: any, _end: any) {
-        return (add as any).calculate(this.args.params);
-    },
-
     AddExp(this: any, first: any, ops: any, rhss: any) {
         return fold.call(this, first, ops, rhss, (acc, op, rhs) =>
             op === "+" ? acc + rhs : acc - rhs

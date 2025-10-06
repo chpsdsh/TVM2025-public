@@ -1,5 +1,5 @@
 Arithmetic {
-  Expr    = spaces AddExp spaces end   
+  Expr    = AddExp   
   AddExp  = MulExp (AddOp MulExp)*
   MulExp  = Unary  (MulOp Unary)*
   Unary   = "-" Unary  -- neg
