@@ -40,6 +40,13 @@ export async function buildFunction(e: Expr, variables: string[]): Promise<Fn<nu
     return await buildOneFunctionModule("test", variables.length, [expr]);
 }
 
+const op = {
+  Add: i32.add,
+  Sub: i32.sub,
+  Mul: i32.mul,
+  Div: i32.div_s
+} as const;
+
 function wasm(e: Expr, args: string[]): Op<I32> {
   switch (e.kind) {
     case "Num":
@@ -60,28 +67,13 @@ function wasm(e: Expr, args: string[]): Op<I32> {
       return i32.sub(i32.const(0), x);
     }
 
-    case "Add": {
-      const l = wasm(e.left, args);
-      const r = wasm(e.right, args);
-      return i32.add(l, r);
-    }
-
-    case "Sub": {
-      const l = wasm(e.left, args);
-      const r = wasm(e.right, args);
-      return i32.sub(l, r);
-    }
-
-    case "Mul": {
-      const l = wasm(e.left, args);
-      const r = wasm(e.right, args);
-      return i32.mul(l, r);
-    }
-
+    case "Add": 
+    case "Sub": 
+    case "Mul": 
     case "Div": {
       const l = wasm(e.left, args);
       const r = wasm(e.right, args);
-      return i32.div_s(l, r);
+      return op[e.kind] (l, r);
     }
   }
 }
