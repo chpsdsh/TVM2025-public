@@ -1,8 +1,9 @@
 import { test } from "../../mark";
-import { Expr, parseExpr } from "../../lab04";
+import { Expr, parseExpr, printExpr } from "../../lab04";
 
 import { simplify, cost } from "../src";
 import { basicIdentities, commutativeIdentities, toughIdentities } from './identities';
+
 
 const estimate = (source: string) => cost(parseExpr(source));
 
@@ -28,7 +29,12 @@ describe('Testing cost function', ()=>
 
 });
 
-const parseSimplifyAndCost = (source: string, identities: ()=>[Expr, Expr][]) => cost(simplify(parseExpr(source), identities()));
+const parseSimplifyAndCost = (source: string, identities: ()=>[Expr, Expr][]) => {
+
+    const simplified = simplify(parseExpr(source), identities());
+    console.log(`${source} => ${printExpr(simplified)}`);
+    return cost(simplified);
+} ;
 
 describe('Testing simplify function', ()=>
 {
@@ -44,5 +50,5 @@ describe('Testing simplify function', ()=>
     test("--42=>42", 4, parseSimplifyAndCost, 0, "--42", commutativeIdentities)
     test("x*0*y=>0", 4, parseSimplifyAndCost, 0, "x*0*y", commutativeIdentities);
     test("x*(1+0*y)=>x", 4, parseSimplifyAndCost, 1, "x*(1+0*y)", commutativeIdentities);
-    test("(a+b)*(b+a)-(a+b)*(a+b)=>0", 5, parseSimplifyAndCost, 0, "(a+b)*(b+a)-(b+a)*(a+b)", toughIdentities);
+    test("(a+b)*(b+a)-(a-b)*(a-b)=>4*a*b", 5, parseSimplifyAndCost, 4, "(a+b)*(b+a)-(a-b)*(a-b)", toughIdentities);
 });

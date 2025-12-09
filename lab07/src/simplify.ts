@@ -1,7 +1,6 @@
 import { Expr } from "../../lab04";
 import { cost } from "./cost";
 
-const MAX_STEPS = 5000;
 const COST_LIMIT = 2;
 
 
@@ -219,7 +218,7 @@ export function simplify(e: Expr, identities: [Expr, Expr][]): Expr {
     let bestCost = cost(e);
 
     let steps = 0;
-    while (q.length && steps < MAX_STEPS) {
+    while (q.length ) {
         steps++;
 
         const cur = q.shift()!;

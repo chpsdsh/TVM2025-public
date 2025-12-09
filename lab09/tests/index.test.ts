@@ -29,5 +29,3 @@ describe('Testing the sample programs', () => {
     test('two results', 4, testTwoResults<number>, [6, 0], '4.divide', 'divide', 42, 7);
     test('conditional', 4, testOneResult<number>, 7, '4.gcd', 'gcd', 42, 49);
 });
-
-
