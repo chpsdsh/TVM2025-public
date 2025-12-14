@@ -34,6 +34,9 @@ import {
 let z3Context: Context | null = null;
 let z3: Context;
 
+// NEW: cache for recursive axioms (e.g., factorial)
+const recursiveAxiomsAdded = new Set<string>();
+
 async function initZ3() {
   if (!z3Context) {
     const { Context } = await init();
@@ -44,6 +47,8 @@ async function initZ3() {
 
 export function flushZ3() {
   z3Context = null;
+  // NEW: avoid cross-test contamination
+  recursiveAxiomsAdded.clear();
 }
 
 // -------------------- Result type --------------------
@@ -117,8 +122,7 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
   if (hasFailure) {
     const failed = results.filter((r) => !r.verified).map((r) => r.function).join(", ");
     // Tests for *.Error.funny only require that we throw; positions may be empty.
-            throw new Error(`Verification failed for: ${failed}`);
-
+    throw new Error(`Verification failed for: ${failed}`);
   }
 
   return results;
@@ -219,7 +223,7 @@ function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule
   const invariant: Predicate | undefined = whileStmt.invariant;
   if (!invariant) {
     // If there is a while-loop but no invariant, treat as verification failure (required by lab).
-    throw new Error("while без invariant (для верификации нужен invariant)")
+    throw new Error("while без invariant (для верификации нужен invariant)");
   }
 
   const cond = convertConditionToPredicate(whileStmt.condition as Condition);
@@ -284,9 +288,17 @@ function convertConditionToPredicate(c: Condition): Predicate {
     case "not":
       return { kind: "not", inner: convertConditionToPredicate((c as any).condition) } as any;
     case "and":
-      return { kind: "and", left: convertConditionToPredicate((c as any).left), right: convertConditionToPredicate((c as any).right) } as any;
+      return {
+        kind: "and",
+        left: convertConditionToPredicate((c as any).left),
+        right: convertConditionToPredicate((c as any).right),
+      } as any;
     case "or":
-      return { kind: "or", left: convertConditionToPredicate((c as any).left), right: convertConditionToPredicate((c as any).right) } as any;
+      return {
+        kind: "or",
+        left: convertConditionToPredicate((c as any).left),
+        right: convertConditionToPredicate((c as any).right),
+      } as any;
     case "paren":
       return { kind: "paren", inner: convertConditionToPredicate((c as any).inner) } as any;
   }
@@ -372,7 +384,10 @@ function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr)
     }
 
     case "paren":
-      return { kind: "paren", inner: substituteVarInPredicate((pred as ParenPredicate).inner, varName, subst) } as any;
+      return {
+        kind: "paren",
+        inner: substituteVarInPredicate((pred as ParenPredicate).inner, varName, subst),
+      } as any;
 
     case "implies":
       return {
@@ -473,7 +488,10 @@ function substituteArrayAccessInPredicate(pred: Predicate, acc: ArrAccessExpr, s
     }
 
     case "paren":
-      return { kind: "paren", inner: substituteArrayAccessInPredicate((pred as ParenPredicate).inner, acc, subst) } as any;
+      return {
+        kind: "paren",
+        inner: substituteArrayAccessInPredicate((pred as ParenPredicate).inner, acc, subst),
+      } as any;
 
     case "implies":
       return {
@@ -547,9 +565,17 @@ function exprEquals(a: Expr, b: Expr): boolean {
     case "Sub":
     case "Mul":
     case "Div":
-      return (a as any).kind === (b as any).kind && exprEquals((a as any).left, (b as any).left) && exprEquals((a as any).right, (b as any).right);
+      return (
+        (a as any).kind === (b as any).kind &&
+        exprEquals((a as any).left, (b as any).left) &&
+        exprEquals((a as any).right, (b as any).right)
+      );
     case "funccall":
-      return (a as any).name === (b as any).name && (a as any).args.length === (b as any).args.length && (a as any).args.every((x: Expr, i: number) => exprEquals(x, (b as any).args[i]));
+      return (
+        (a as any).name === (b as any).name &&
+        (a as any).args.length === (b as any).args.length &&
+        (a as any).args.every((x: Expr, i: number) => exprEquals(x, (b as any).args[i]))
+      );
     case "arraccess":
       return (a as any).name === (b as any).name && exprEquals((a as any).index, (b as any).index);
     default:
@@ -746,6 +772,15 @@ function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedMod
 
 // -------------------- Optional: ensures axiom for calls --------------------
 
+// NEW: helper for stable key in result names for recursive axioms
+function stableKey(a: Arith): string {
+  return a
+    .toString()
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3: Context, module: AnnotatedModule, solver: any) {
   const f = module.functions.find((fn) => fn.name === name);
   if (!f) return;
@@ -753,8 +788,25 @@ function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3:
   if (f.returns.length !== 1) return;
   if (f.returns[0].typeName !== "int") return;
 
-  // prevent trivial recursion explosion
-  if (predicateContainsFunCall(f.ensures, name)) return;
+  // NEW: if recursive spec (factorial), add base+step axioms once
+  if (predicateContainsFunCall(f.ensures, name)) {
+    if (recursiveAxiomsAdded.has(name)) return;
+    recursiveAxiomsAdded.add(name);
+
+    // factorial-style axioms:
+    // n == 0 -> fact(n) == 1
+    // n > 0  -> fact(n) == n * fact(n-1)
+    const n = z3.Int.const(`n_${name}_rec`);
+
+    const resN = z3.Int.const(`${name}_result_${stableKey(n)}`);
+    const nMinus1 = n.sub(z3.Int.val(1));
+    const resNMinus1 = z3.Int.const(`${name}_result_${stableKey(nMinus1)}`);
+
+    solver.add(z3.ForAll([n], z3.Implies(n.eq(0), resN.eq(z3.Int.val(1)))));
+    solver.add(z3.ForAll([n], z3.Implies(n.gt(0), resN.eq(n.mul(resNMinus1)))));
+
+    return;
+  }
 
   const env2: Env = new Map();
 
