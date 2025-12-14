@@ -33,8 +33,7 @@ Funnier <: Funny {
     = "invariant" Predicate
 
   Formula
-    = "formula"
-      Ident
+    = Ident
       "(" ParamList ")"
       "=>"
       Predicate

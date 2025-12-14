@@ -19,6 +19,10 @@ export const enum ErrorCode {
 
 }
 
+export const enum ErrorCode {
+  VerificationFailed = 'E_VERIFICATION_FAILED',
+}
+
 export class FunnyError extends Error {
     constructor(
         message: string,

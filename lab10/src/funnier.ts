@@ -72,7 +72,7 @@ export interface FormulaRefPredicate {
 
 
 export interface FormulaDef {
-  type: "formula";
+  kind: "formula";
   name: string;
   parameters: ParameterDef[];
   body: Predicate;

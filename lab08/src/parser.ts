@@ -236,11 +236,11 @@ function checkFuncCall(
 
 
 function isFuncCallExpr(e: ast.Expr): e is ast.FuncCallExpr {
-  return (e as any).kind === "funccall";
+  return e .kind === "funccall";
 }
 
 function isArrAccessExpr(e: ast.Expr): e is ast.ArrAccessExpr {
-  return (e as any).kind === "arraccess";
+  return e .kind === "arraccess";
 }
 
 

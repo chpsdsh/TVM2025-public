@@ -74,9 +74,9 @@ const getFunnierAst = {
 
     for (const it of items.children) {
       const node = it.parse() as AnnotatedFunction | FormulaDef;
-      if ((node as any).type === "fun") {
+      if (node.kind === "fun") {
         functions.push(node as AnnotatedFunction);
-      } else if ((node as any).type === "formula") {
+      } else if (node.kind === "formula") {
         formulas.push(node as FormulaDef);
       }
     }
@@ -186,7 +186,6 @@ const getFunnierAst = {
 
 
   Formula(
-    _formula: any,
     name: any,
     _lp: any,
     paramsNode: any,
@@ -200,7 +199,7 @@ const getFunnierAst = {
     const body = bodyPred.parse() as Predicate;
 
     const f: FormulaDef = {
-      type: "formula",
+      kind: "formula",
       name: nameStr,
       parameters: params,
       body,
