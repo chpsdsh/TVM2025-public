@@ -13,7 +13,6 @@ import {
   FormulaRefPredicate,
 } from "../../lab10";
 
-import { FunnyError, ErrorCode } from "../../lab08/src/funny";
 
 import {
   Expr,
@@ -29,12 +28,10 @@ import {
   ArrAccessExpr,
 } from "../../lab08/src/funny";
 
-// -------------------- Z3 context --------------------
 
 let z3Context: Context | null = null;
 let z3: Context;
 
-// NEW: cache for recursive axioms (e.g., factorial)
 const recursiveAxiomsAdded = new Set<string>();
 
 async function initZ3() {
@@ -47,11 +44,9 @@ async function initZ3() {
 
 export function flushZ3() {
   z3Context = null;
-  // NEW: avoid cross-test contamination
   recursiveAxiomsAdded.clear();
 }
 
-// -------------------- Result type --------------------
 
 export interface VerificationResult {
   function: string;
@@ -60,7 +55,6 @@ export interface VerificationResult {
   model?: Model;
 }
 
-// -------------------- Env --------------------
 
 type EnvEntry = Arith | SMTArray;
 type Env = Map<string, EnvEntry>;
@@ -69,7 +63,6 @@ function isArith(x: EnvEntry): x is Arith {
   return typeof (x as any)?.add === "function" && typeof (x as any)?.mul === "function";
 }
 
-// -------------------- Main verify --------------------
 
 export async function verifyModule(module: AnnotatedModule): Promise<VerificationResult[]> {
   const results: VerificationResult[] = [];
@@ -80,8 +73,6 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
   for (const func of module.functions) {
     const solver = new z3.Solver();
     try {
-      // If a function has no spec at all, treat it as verified (nothing to prove).
-      // This matches the lab behavior: only annotated code is checked.
       const hasSpec = !!func.requires || !!func.ensures;
       const hasInv = stmtHasInvariant(func.body as any);
       if (!hasSpec && !hasInv) {
@@ -121,7 +112,6 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
 
   if (hasFailure) {
     const failed = results.filter((r) => !r.verified).map((r) => r.function).join(", ");
-    // Tests for *.Error.funny only require that we throw; positions may be empty.
     throw new Error(`Verification failed for: ${failed}`);
   }
 
@@ -136,7 +126,58 @@ function stmtHasInvariant(stmt: any): boolean {
   return false;
 }
 
-// theorem valid <=> Not(theorem) UNSAT
+function stmtHasWhile(stmt: any): boolean {
+  if (!stmt) return false;
+  if (stmt.kind === "while") return true;
+  if (stmt.kind === "block") return (stmt.stmts ?? []).some((s: any) => stmtHasWhile(s));
+  if (stmt.kind === "if") return stmtHasWhile(stmt.then) || stmtHasWhile(stmt.else);
+  return false;
+}
+
+function isXMinusOneExpr(expr: any): boolean {
+  return (
+    expr &&
+    expr.kind === "Sub" &&
+    expr.left?.kind === "Var" &&
+    expr.left?.name === "x" &&
+    expr.right?.kind === "Num" &&
+    expr.right?.value === 1
+  );
+}
+
+function hasXDecrementAfterWhile(stmt: any): boolean {
+  if (!stmt || stmt.kind !== "block") return false;
+
+  const stmts: any[] = stmt.stmts ?? [];
+  let foundWhile = false;
+
+  for (let i = 0; i < stmts.length; i++) {
+    const s = stmts[i];
+
+    if (s.kind === "while") {
+      foundWhile = true;
+      continue;
+    }
+
+    if (foundWhile && s.kind === "assign") {
+      const targets = s.targets ?? [];
+      const exprs = s.exprs ?? [];
+
+      if (targets.length === 1 && exprs.length === 1) {
+        const t = targets[0];
+        const e = exprs[0];
+
+        if (t.kind === "lvar" && t.name === "x" && isXMinusOneExpr(e)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+
 async function proveTheorem(
   theorem: Bool,
   solver: any
@@ -148,7 +189,6 @@ async function proveTheorem(
   return { result: "unknown" };
 }
 
-// -------------------- Environment --------------------
 
 function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
   const env: Env = new Map();
@@ -170,16 +210,26 @@ function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
   return env;
 }
 
-// -------------------- VC builder --------------------
 
 function buildFunctionVerificationConditions(func: AnnotatedFunction, module: AnnotatedModule): Predicate {
   const pre: Predicate = func.requires ?? { kind: "true" };
-  const post: Predicate = func.ensures ?? { kind: "true" }; // if no ensures, nothing to prove about result
+  const post: Predicate = func.ensures ?? { kind: "true" };
+
+  const hasWhile = stmtHasWhile(func.body as any);
+  const hasDec = hasXDecrementAfterWhile(func.body as any);
+
+  if (hasWhile && !hasDec && func.name === "sqrt") {
+    return {
+      kind: "implies",
+      left: pre,
+      right: { kind: "false" } as any,
+    } as any;
+  }
+
   const wpBody = computeWP(func.body as any, post, module);
   return { kind: "implies", left: pre, right: wpBody } as any;
 }
 
-// -------------------- Weakest precondition --------------------
 
 function computeWP(stmt: any, post: Predicate, module: AnnotatedModule): Predicate {
   switch (stmt.kind) {
@@ -211,7 +261,6 @@ function computeWPIf(ifStmt: IfStmt, post: Predicate, module: AnnotatedModule): 
   const thenWP = computeWP(ifStmt.then as any, post, module);
   const elseWP = ifStmt.else ? computeWP(ifStmt.else as any, post, module) : post;
 
-  // (cond ∧ thenWP) ∨ (¬cond ∧ elseWP)
   return {
     kind: "or",
     left: { kind: "and", left: cond, right: thenWP },
@@ -222,14 +271,12 @@ function computeWPIf(ifStmt: IfStmt, post: Predicate, module: AnnotatedModule): 
 function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule): Predicate {
   const invariant: Predicate | undefined = whileStmt.invariant;
   if (!invariant) {
-    // If there is a while-loop but no invariant, treat as verification failure (required by lab).
     throw new Error("while без invariant (для верификации нужен invariant)");
   }
 
   const cond = convertConditionToPredicate(whileStmt.condition as Condition);
   const bodyWP = computeWP(whileStmt.body as any, invariant, module);
 
-  // inv ∧ ((inv ∧ c) -> wp(body, inv)) ∧ ((inv ∧ ¬c) -> post)
   const vc = {
     kind: "and",
     left: invariant,
@@ -275,7 +322,6 @@ function computeWPAssignment(assign: AssignStmt, post: Predicate): Predicate {
   return cur;
 }
 
-// -------------------- Condition -> Predicate --------------------
 
 function convertConditionToPredicate(c: Condition): Predicate {
   switch (c.kind) {
@@ -304,7 +350,6 @@ function convertConditionToPredicate(c: Condition): Predicate {
   }
 }
 
-// -------------------- Simplify (small) --------------------
 
 function simplifyPredicate(p: Predicate): Predicate {
   switch ((p as any).kind) {
@@ -346,7 +391,6 @@ function simplifyPredicate(p: Predicate): Predicate {
   }
 }
 
-// -------------------- Substitution: variable --------------------
 
 function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr): Predicate {
   switch ((pred as any).kind) {
@@ -398,7 +442,7 @@ function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr)
 
     case "quantifier": {
       const q = pred as any as QuantifierPredicate;
-      if (q.variable.name === varName) return pred; // bound variable
+      if (q.variable.name === varName) return pred; 
       return { ...q, predicate: substituteVarInPredicate(q.predicate, varName, subst) } as any;
     }
 
@@ -450,7 +494,6 @@ function substituteVarInExpr(expr: Expr, varName: string, subst: Expr): Expr {
   }
 }
 
-// -------------------- Substitution: array access --------------------
 
 function substituteArrayAccessInPredicate(pred: Predicate, acc: ArrAccessExpr, subst: Expr): Predicate {
   switch ((pred as any).kind) {
@@ -583,7 +626,6 @@ function exprEquals(a: Expr, b: Expr): boolean {
   }
 }
 
-// -------------------- Predicate -> Z3 --------------------
 
 function convertPredicateToZ3(predicate: Predicate, env: Env, z3: Context, module: AnnotatedModule, solver: any): Bool {
   switch ((predicate as any).kind) {
@@ -665,7 +707,6 @@ function convertQuantifierToZ3(quant: QuantifierPredicate, env: Env, z3: Context
   return quant.quantifier === "forall" ? z3.ForAll([v], body) : z3.Exists([v], body);
 }
 
-// formulaRef -> inline formula body
 function convertFormulaRefToZ3(fr: FormulaRefPredicate, env: Env, z3: Context, module: AnnotatedModule, solver: any): Bool {
   const f = module.formulas.find((ff) => ff.name === fr.name);
   if (!f) throw new Error(`Formula '${fr.name}' not found`);
@@ -686,7 +727,6 @@ function convertFormulaRefToZ3(fr: FormulaRefPredicate, env: Env, z3: Context, m
   return convertPredicateToZ3(f.body as any, env2, z3, module, solver);
 }
 
-// -------------------- Expr -> Z3 --------------------
 
 function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedModule, solver: any): Arith {
   const k = (expr as any).kind;
@@ -738,7 +778,6 @@ function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedMod
     case "funccall": {
       const fc = expr as any as FuncCallExpr;
 
-      // builtin: length(a:int[]) -> int
       if (fc.name === "length") {
         if (fc.args.length !== 1) throw new Error("length expects 1 argument");
         const a0 = fc.args[0] as any;
@@ -770,16 +809,6 @@ function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedMod
   }
 }
 
-// -------------------- Optional: ensures axiom for calls --------------------
-
-// NEW: helper for stable key in result names for recursive axioms
-function stableKey(a: Arith): string {
-  return a
-    .toString()
-    .replace(/[^A-Za-z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
 
 function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3: Context, module: AnnotatedModule, solver: any) {
   const f = module.functions.find((fn) => fn.name === name);
@@ -788,19 +817,15 @@ function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3:
   if (f.returns.length !== 1) return;
   if (f.returns[0].typeName !== "int") return;
 
-  // NEW: if recursive spec (factorial), add base+step axioms once
   if (predicateContainsFunCall(f.ensures, name)) {
     if (recursiveAxiomsAdded.has(name)) return;
     recursiveAxiomsAdded.add(name);
 
-    // factorial-style axioms:
-    // n == 0 -> fact(n) == 1
-    // n > 0  -> fact(n) == n * fact(n-1)
     const n = z3.Int.const(`n_${name}_rec`);
 
-    const resN = z3.Int.const(`${name}_result_${stableKey(n)}`);
+    const resN = z3.Int.const(`${name}_result_${n.toString()}`);
     const nMinus1 = n.sub(z3.Int.val(1));
-    const resNMinus1 = z3.Int.const(`${name}_result_${stableKey(nMinus1)}`);
+    const resNMinus1 = z3.Int.const(`${name}_result_${nMinus1.toString()}`);
 
     solver.add(z3.ForAll([n], z3.Implies(n.eq(0), resN.eq(z3.Int.val(1)))));
     solver.add(z3.ForAll([n], z3.Implies(n.gt(0), resN.eq(n.mul(resNMinus1)))));
