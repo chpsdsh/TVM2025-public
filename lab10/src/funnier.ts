@@ -4,6 +4,7 @@ import {
   WhileStmt,
   ParameterDef,
   Expr,
+  Location,
 } from '../../lab08';
 
 
@@ -20,10 +21,12 @@ export type Predicate =
 
 export interface TruePredicate {
   kind: "true";
+  loc?: Location;
 }
 
 export interface FalsePredicate {
   kind: "false";
+  loc?: Location;
 }
 
 export interface ComparisonPredicate {
@@ -31,28 +34,33 @@ export interface ComparisonPredicate {
   left: Expr;
   op: "==" | "!=" | ">" | "<" | ">=" | "<=";
   right: Expr;
+  loc?: Location;
 }
 
 export interface NotPredicate {
   kind: "not";
   inner: Predicate;
+  loc?: Location;
 }
 
 export interface AndPredicate {
   kind: "and";
   left: Predicate;
   right: Predicate;
+  loc?: Location;
 }
 
 export interface OrPredicate {
   kind: "or";
   left: Predicate;
   right: Predicate;
+  loc?: Location;
 }
 
 export interface ParenPredicate {
   kind: "paren";
   inner: Predicate;
+  loc?: Location;
 }
 
 export type QuantifierKind = "forall" | "exists";
@@ -60,14 +68,16 @@ export type QuantifierKind = "forall" | "exists";
 export interface QuantifierPredicate {
   kind: "quantifier";
   quantifier: QuantifierKind;
-  variable: ParameterDef;  
+  variable: ParameterDef;
   predicate: Predicate;
+  loc?: Location;
 }
 
 export interface FormulaRefPredicate {
   kind: "formulaRef";
   name: string;
   args: Expr[];
+  loc?: Location;
 }
 
 
@@ -76,6 +86,7 @@ export interface FormulaDef {
   name: string;
   parameters: ParameterDef[];
   body: Predicate;
+  loc?: Location;
 }
 
 

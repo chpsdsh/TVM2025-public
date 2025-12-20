@@ -1,0 +1,6 @@
+bad()
+returns x:int
+ensures x == 10
+{
+  x = 0;
+}

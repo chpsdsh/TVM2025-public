@@ -7,9 +7,8 @@ import grammar, {
   FunnySemantics,
 } from "./funny.ohm-bundle";
 
-import { MatchResult, Semantics } from "ohm-js";
+import { MatchResult } from "ohm-js";
 import * as arith from "../../lab04";
-
 
 function collectList<T>(node: any): T[] {
   return node.asIteration().children.map((c: any) => c.parse() as T);
@@ -24,6 +23,52 @@ type PosInfo = {
   endLine?: number;
   endCol?: number;
 };
+
+// -------------------- Location helpers --------------------
+
+// Save current filename so every Location can include it.
+let currentFile: string | undefined = undefined;
+
+function tryGetLineCol(src: any, idx: number): { lineNum: number; colNum: number } | null {
+  try {
+    // ohm-js Source has getLineAndColumn(idx)
+    if (src && typeof src.getLineAndColumn === "function") {
+      return src.getLineAndColumn(idx);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function mkLoc(nodeOrThis: any): ast.Location | undefined {
+  const src = nodeOrThis?.source;
+  if (!src) return undefined;
+
+  const startIdx: number | undefined = src.startIdx;
+  const endIdx: number | undefined = src.endIdx;
+
+  if (typeof startIdx !== "number") return undefined;
+
+  const start = tryGetLineCol(src, startIdx);
+  const end = typeof endIdx === "number" ? tryGetLineCol(src, endIdx) : null;
+
+  if (!start) return undefined;
+
+  return {
+    file: currentFile,
+    startLine: start.lineNum,
+    startCol: start.colNum,
+    endLine: end?.lineNum,
+    endCol: end?.colNum,
+  };
+}
+
+function withLoc<T extends object>(nodeOrThis: any, obj: T): T {
+  const loc = mkLoc(nodeOrThis);
+  return loc ? ({ ...(obj as any), loc } as T) : obj;
+}
+
 
 export function fail(
   code: ErrorCode,
@@ -78,6 +123,7 @@ function ensureDeclared(
   }
 }
 
+// -------------------- Typechecking / static checks --------------------
 
 export function checkModule(mod: ast.Module): void {
   const funEnv: FunEnv = Object.create(null);
@@ -234,15 +280,13 @@ function checkFuncCall(
   return fn.returns.length;
 }
 
-
 function isFuncCallExpr(e: ast.Expr): e is ast.FuncCallExpr {
-  return e .kind === "funccall";
+  return e.kind === "funccall";
 }
 
 function isArrAccessExpr(e: ast.Expr): e is ast.ArrAccessExpr {
-  return e .kind === "arraccess";
+  return e.kind === "arraccess";
 }
-
 
 function checkExpr(
   e: ast.Expr,
@@ -301,7 +345,6 @@ function checkExpr(
   }
 }
 
-
 function checkCondition(
   cond: ast.Condition,
   env: VarEnv,
@@ -339,6 +382,7 @@ function checkCondition(
   }
 }
 
+// -------------------- Parsing (Ohm semantics) --------------------
 
 function foldLogicalChain<T>(
   first: any,
@@ -376,14 +420,13 @@ function makeComparisonNode(
   rightNode: any,
   op: ast.ComparisonCond["op"]
 ): ast.ComparisonCond {
-  return {
+  return withLoc(leftNode, {
     kind: "comparison",
     left: leftNode.parse() as ast.Expr,
     op,
     right: rightNode.parse() as ast.Expr,
-  };
+  } as ast.ComparisonCond);
 }
-
 
 export const getFunnyAst: FunnyActionDict<any> = {
   ...(getExprAst as any),
@@ -392,10 +435,10 @@ export const getFunnyAst: FunnyActionDict<any> = {
     const functions = funcs.children.map(
       (f: any) => f.parse() as ast.FunctionDef
     );
-    return {
+    return withLoc(this, {
       kind: "module",
       functions,
-    } as ast.Module;
+    } as ast.Module);
   },
 
   Function(
@@ -411,14 +454,14 @@ export const getFunnyAst: FunnyActionDict<any> = {
       usesOpt.children.length > 0
         ? (usesOpt.child(0).parse() as ast.ParameterDef[])
         : [];
-    return {
+    return withLoc(this, {
       kind: "fun",
       name: name.sourceString,
       parameters: params.parse() as ast.ParameterDef[],
       returns: retSpec.parse() as ast.ParameterDef[],
       locals,
       body: stmt.parse() as ast.Statement,
-    } as ast.FunctionDef;
+    } as ast.FunctionDef);
   },
 
   UsesSpec(_uses: any, params: any) {
@@ -439,11 +482,11 @@ export const getFunnyAst: FunnyActionDict<any> = {
 
   Param(name: any, _colon: any, type: any) {
     const typeName = type.parse() as ast.ParameterDef["typeName"];
-    return {
+    return withLoc(this, {
       kind: "param",
       name: name.sourceString,
       typeName,
-    } as ast.ParameterDef;
+    } as ast.ParameterDef);
   },
 
   Type_array(_int: any, _brackets: any) {
@@ -459,12 +502,12 @@ export const getFunnyAst: FunnyActionDict<any> = {
   },
 
   Block(_lb: any, stmts: any, _rb: any) {
-    return {
+    return withLoc(this, {
       kind: "block",
       stmts: stmts.children.map(
         (s: any) => s.parse() as ast.Statement
       ),
-    } as ast.BlockStmt;
+    } as ast.BlockStmt);
   },
 
   Stmt(child: any) {
@@ -472,18 +515,18 @@ export const getFunnyAst: FunnyActionDict<any> = {
   },
 
   Stmt_expressionStatement(expr: any, _semi: any) {
-    return {
+    return withLoc(this, {
       kind: "expr",
       expr: expr.parse() as ast.Expr,
-    } as ast.ExprStmt;
+    } as ast.ExprStmt);
   },
 
   While(_while: any, _lp: any, cond: any, _rp: any, body: any) {
-    return {
+    return withLoc(this, {
       kind: "while",
       condition: cond.parse() as ast.Condition,
       body: body.parse() as ast.Statement,
-    } as ast.WhileStmt;
+    } as ast.WhileStmt);
   },
 
   If(
@@ -501,12 +544,12 @@ export const getFunnyAst: FunnyActionDict<any> = {
       elseBranch = elseStmtOpt.child(0).parse() as ast.Statement;
     }
 
-    return {
+    return withLoc(this, {
       kind: "if",
       condition: cond.parse() as ast.Condition,
       then: thenStmt.parse() as ast.Statement,
       else: elseBranch,
-    } as ast.IfStmt;
+    } as ast.IfStmt);
   },
 
   Assign_tupleAssign(
@@ -515,11 +558,11 @@ export const getFunnyAst: FunnyActionDict<any> = {
     exprs: any,
     _semi: any
   ) {
-    return {
+    return withLoc(this, {
       kind: "assign",
       targets: lvalues.parse() as ast.LValue[],
       exprs: exprs.parse() as ast.Expr[],
-    } as ast.AssignStmt;
+    } as ast.AssignStmt);
   },
 
   Assign_simpleAssign(
@@ -528,11 +571,11 @@ export const getFunnyAst: FunnyActionDict<any> = {
     expr: any,
     _semi: any
   ) {
-    return {
+    return withLoc(this, {
       kind: "assign",
       targets: [lvalue.parse() as ast.LValue],
       exprs: [expr.parse() as ast.Expr],
-    } as ast.AssignStmt;
+    } as ast.AssignStmt);
   },
 
   LValueList(list: any) {
@@ -546,33 +589,33 @@ export const getFunnyAst: FunnyActionDict<any> = {
   LValue(child: any) {
     if (child.ctorName === "ArrayAccess") {
       const access = child.parse() as ast.ArrAccessExpr;
-      return {
+      return withLoc(this, {
         kind: "larr",
         name: access.name,
         index: access.index,
-      } as ast.ArrLValue;
+      } as ast.ArrLValue);
     } else {
-      return {
+      return withLoc(this, {
         kind: "lvar",
         name: child.sourceString,
-      } as ast.VarLValue;
+      } as ast.VarLValue);
     }
   },
 
   FunctionCall(name: any, _lp: any, argsNode: any, _rp: any) {
-    return {
+    return withLoc(this, {
       kind: "funccall",
       name: name.sourceString,
       args: argsNode.parse() as ast.Expr[],
-    } as ast.FuncCallExpr;
+    } as ast.FuncCallExpr);
   },
 
   ArrayAccess(name: any, _lb: any, index: any, _rb: any) {
-    return {
+    return withLoc(this, {
       kind: "arraccess",
       name: name.sourceString,
       index: index.parse() as ast.Expr,
-    } as ast.ArrAccessExpr;
+    } as ast.ArrAccessExpr);
   },
 
   Condition(orCond: any) {
@@ -580,7 +623,7 @@ export const getFunnyAst: FunnyActionDict<any> = {
   },
 
   OrCond(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<ast.Condition>(
+    const built = foldLogicalChain<ast.Condition>(
       first,
       rest,
       (left, right) =>
@@ -590,10 +633,11 @@ export const getFunnyAst: FunnyActionDict<any> = {
           right,
         } as ast.OrCond)
     );
+    return withLoc(this, built);
   },
 
   AndCond(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<ast.Condition>(
+    const built = foldLogicalChain<ast.Condition>(
       first,
       rest,
       (left, right) =>
@@ -603,10 +647,11 @@ export const getFunnyAst: FunnyActionDict<any> = {
           right,
         } as ast.AndCond)
     );
+    return withLoc(this, built);
   },
 
   NotCond(nots: any, atom: any) {
-    return repeatPrefix<ast.Condition>(
+    const built = repeatPrefix<ast.Condition>(
       nots,
       atom,
       (condition) =>
@@ -615,14 +660,15 @@ export const getFunnyAst: FunnyActionDict<any> = {
           condition,
         } as ast.NotCond)
     );
+    return withLoc(this, built);
   },
 
   AtomCond_true(_t: any) {
-    return { kind: "true" } as ast.TrueCond;
+    return withLoc(this, { kind: "true" } as ast.TrueCond);
   },
 
   AtomCond_false(_f: any) {
-    return { kind: "false" } as ast.FalseCond;
+    return withLoc(this, { kind: "false" } as ast.FalseCond);
   },
 
   AtomCond_cmp(comp: any) {
@@ -630,10 +676,10 @@ export const getFunnyAst: FunnyActionDict<any> = {
   },
 
   ParenCond(_lp: any, cond: any, _rp: any) {
-    return {
+    return withLoc(this, {
       kind: "paren",
       inner: cond.parse() as ast.Condition,
-    } as ast.ParenCond;
+    } as ast.ParenCond);
   },
 
   AtomCond_paren(parenNode: any) {
@@ -658,7 +704,9 @@ interface FunnyActionsExt {
   parse(): ast.Module;
 }
 
-export function parseFunny(source: string): ast.Module {
+// file is optional (backwards compatible)
+export function parseFunny(source: string, file?: string): ast.Module {
+  currentFile = file;
   const match: MatchResult = grammar.Funny.match(source, "Module");
 
   if (match.failed()) {

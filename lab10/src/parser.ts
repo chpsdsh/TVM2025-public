@@ -1,6 +1,8 @@
-import { MatchResult, Semantics } from 'ohm-js';
+// lab10/src/parser.ts
 
-import grammar, { FunnierActionDict } from './funnier.ohm-bundle';
+import { MatchResult, Semantics } from "ohm-js";
+
+import grammar, { FunnierActionDict } from "./funnier.ohm-bundle";
 
 import {
   AnnotatedModule,
@@ -17,7 +19,7 @@ import {
   ParenPredicate,
   QuantifierPredicate,
   FormulaRefPredicate,
-} from './funnier';
+} from "./funnier";
 
 import {
   ParameterDef,
@@ -26,8 +28,11 @@ import {
   Condition,
   ErrorCode,
   FunnyError,
+  Location,
   getFunnyAst,
-} from '../../lab08';
+} from "../../lab08";
+
+// -------------------- helpers --------------------
 
 function collectList<T>(node: any): T[] {
   return node.asIteration().children.map((c: any) => c.parse() as T);
@@ -39,8 +44,7 @@ function foldLogicalChain<T>(
   makeNode: (left: T, right: T) => T
 ): T {
   let node = first.parse() as T;
-  const restChildren =
-    rest.children ?? rest.asIteration?.().children ?? [];
+  const restChildren = rest.children ?? rest.asIteration?.().children ?? [];
   for (const r of restChildren) {
     const rhs = r.parse() as T;
     node = makeNode(node, rhs);
@@ -55,18 +59,44 @@ function repeatPrefix<T>(
 ): T {
   let node = base.parse() as T;
   const count =
-    nots.children?.length ??
-    nots.asIteration?.().children.length ??
-    0;
+    nots.children?.length ?? nots.asIteration?.().children.length ?? 0;
   for (let i = 0; i < count; i++) {
     node = makeNode(node);
   }
   return node;
 }
 
+// -------------------- Location plumbing --------------------
+
+let currentFile: string | undefined = undefined;
+
+function mkLoc(nodeOrThis: any): Location | undefined {
+  const interval = nodeOrThis?.source;
+  if (!interval) return undefined;
+
+  const start = interval.getLineAndColumn();
+  const end = interval.getLineAndColumn(interval.endIdx);
+
+  return {
+    file: currentFile,
+    startLine: start.lineNum,
+    startCol: start.colNum,
+    endLine: end.lineNum,
+    endCol: end.colNum,
+  };
+}
+
+function withLoc<T extends object>(nodeOrThis: any, obj: T): T {
+  const loc = mkLoc(nodeOrThis);
+  return loc ? ({ ...(obj as any), loc } as T) : obj;
+}
+
+// -------------------- Semantics actions --------------------
+
 const getFunnierAst = {
   ...(getFunnyAst as any),
 
+  // -------- module / items --------
 
   Module(items: any) {
     const functions: AnnotatedFunction[] = [];
@@ -81,13 +111,11 @@ const getFunnierAst = {
       }
     }
 
-    const mod: AnnotatedModule = {
+    return withLoc(this, {
       kind: "module",
       functions,
       formulas,
-    };
-
-    return mod;
+    } as AnnotatedModule);
   },
 
   Item_fun(fn: any) {
@@ -98,6 +126,7 @@ const getFunnierAst = {
     return form.parse() as FormulaDef;
   },
 
+  // -------- returns --------
 
   RetOrVoid_retSpec(rs: any) {
     return rs.parse() as ParameterDef[];
@@ -107,6 +136,7 @@ const getFunnierAst = {
     return [] as ParameterDef[];
   },
 
+  // -------- function --------
 
   Function(
     name: any,
@@ -121,7 +151,7 @@ const getFunnierAst = {
   ) {
     const nameStr = name.sourceString;
     const parameters = paramsNode.parse() as ParameterDef[];
-    const returns = retOrVoid.parse() as ParameterDef[];   // [] если void
+    const returns = retOrVoid.parse() as ParameterDef[];
     const locals =
       usesOpt.children.length > 0
         ? (usesOpt.child(0).parse() as ParameterDef[])
@@ -139,7 +169,7 @@ const getFunnierAst = {
 
     const body = stmt.parse() as Statement;
 
-    const fn: AnnotatedFunction = {
+    return withLoc(this, {
       kind: "fun",
       name: nameStr,
       parameters,
@@ -148,9 +178,7 @@ const getFunnierAst = {
       body,
       requires,
       ensures,
-    };
-
-    return fn;
+    } as AnnotatedFunction);
   },
 
   RequiresSpec(_requires: any, pred: any) {
@@ -161,29 +189,31 @@ const getFunnierAst = {
     return pred.parse() as Predicate;
   },
 
+  // -------- while + invariant --------
 
   While(_while: any, _lp: any, cond: any, _rp: any, invOpt: any, body: any) {
     const condition = cond.parse() as Condition;
+
     const invariant =
       invOpt.children.length > 0
         ? (invOpt.child(0).parse() as Predicate)
         : undefined;
+
     const bodyStmt = body.parse() as Statement;
 
-    const ws: AnnotatedWhileStmt = {
+    return withLoc(this, {
       kind: "while",
       condition,
       body: bodyStmt,
       invariant,
-    };
-
-    return ws;
+    } as AnnotatedWhileStmt);
   },
 
   InvariantSpec(_inv: any, pred: any) {
     return pred.parse() as Predicate;
   },
 
+  // -------- formulas --------
 
   Formula(
     name: any,
@@ -198,97 +228,93 @@ const getFunnierAst = {
     const params = paramsNode.parse() as ParameterDef[];
     const body = bodyPred.parse() as Predicate;
 
-    const f: FormulaDef = {
+    return withLoc(this, {
       kind: "formula",
       name: nameStr,
       parameters: params,
       body,
-    };
-    return f;
+    } as FormulaDef);
   },
 
+  // -------- predicates --------
 
   Predicate(orNode: any) {
     return orNode.parse() as Predicate;
   },
 
   OrPred(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<Predicate>(
-      first,
-      rest,
-      (left, right) =>
-        ({
-          kind: "or",
-          left,
-          right,
-        } as OrPredicate)
-    );
+    const node = foldLogicalChain<Predicate>(first, rest, (left, right) => {
+      return {
+        kind: "or",
+        left,
+        right,
+      } as OrPredicate;
+    });
+
+    return withLoc(this, node as any);
   },
 
   AndPred(first: any, _ops: any, rest: any) {
-    return foldLogicalChain<Predicate>(
-      first,
-      rest,
-      (left, right) =>
-        ({
-          kind: "and",
-          left,
-          right,
-        } as AndPredicate)
-    );
+    const node = foldLogicalChain<Predicate>(first, rest, (left, right) => {
+      return {
+        kind: "and",
+        left,
+        right,
+      } as AndPredicate;
+    });
+
+    return withLoc(this, node as any);
   },
 
   NotPred(nots: any, atom: any) {
-    return repeatPrefix<Predicate>(
-      nots,
-      atom,
-      (inner) =>
-        ({
-          kind: "not",
-          inner,
-        } as NotPredicate)
-    );
+    const node = repeatPrefix<Predicate>(nots, atom, (inner) => {
+      return {
+        kind: "not",
+        inner,
+      } as NotPredicate;
+    });
+
+    return withLoc(this, node as any);
   },
 
   AtomPred_true(_t: any) {
-    const n: TruePredicate = { kind: "true" };
-    return n;
+    return withLoc(this, { kind: "true" } as TruePredicate);
   },
 
   AtomPred_false(_f: any) {
-    const n: FalsePredicate = { kind: "false" };
-    return n;
+    return withLoc(this, { kind: "false" } as FalsePredicate);
   },
 
   AtomPred_cmp(comp: any) {
     const c = comp.parse() as any;
-    const n: ComparisonPredicate = {
+    return withLoc(this, {
       kind: "comparison",
       left: c.left as Expr,
       op: c.op as any,
       right: c.right as Expr,
-    };
-    return n;
+    } as ComparisonPredicate);
   },
 
   AtomPred_quant(q: any) {
+    // Quantifier(...) below already withLoc(this,...)
     return q.parse() as QuantifierPredicate;
   },
 
   AtomPred_formulaRef(fr: any) {
+    // FormulaRef(...) below already withLoc(this,...)
     return fr.parse() as FormulaRefPredicate;
   },
 
   AtomPred_paren(p: any) {
+    // ParenPred(...) below already withLoc(this,...)
     return p.parse() as ParenPredicate;
   },
 
   ParenPred(_lp: any, inner: any, _rp: any) {
-    const p: ParenPredicate = {
+    return withLoc(this, {
       kind: "paren",
       inner: inner.parse() as Predicate,
-    };
-    return p;
+    } as ParenPredicate);
   },
 
   Quantifier(qTok: any, _lp: any, paramNode: any, _bar: any, pred: any, _rp: any) {
@@ -296,29 +322,28 @@ const getFunnierAst = {
     const variable = paramNode.parse() as ParameterDef;
     const body = pred.parse() as Predicate;
 
-    const q: QuantifierPredicate = {
+    return withLoc(this, {
       kind: "quantifier",
       quantifier,
       variable,
       predicate: body,
-    };
-
-    return q;
+    } as QuantifierPredicate);
   },
 
   FormulaRef(name: any, _lp: any, argsNode: any, _rp: any) {
-    const fr: FormulaRefPredicate = {
+    return withLoc(this, {
       kind: "formulaRef",
       name: name.sourceString,
       args: argsNode.parse() as Expr[],
-    };
-    return fr;
+    } as FormulaRefPredicate);
   },
 
   ParamList(list: any) {
     return collectList<ParameterDef>(list);
   },
 } satisfies FunnierActionDict<any>;
+
+// -------------------- semantics wiring --------------------
 
 export const semantics: FunnySemanticsExt =
   grammar.Funnier.createSemantics() as FunnySemanticsExt;
@@ -333,7 +358,11 @@ interface FunnyActionsExt {
   parse(): AnnotatedModule;
 }
 
+// -------------------- public API --------------------
+
 export function parseFunnier(source: string, origin?: string): AnnotatedModule {
+  currentFile = origin;
+
   const match: MatchResult = grammar.Funnier.match(source, "Module");
 
   if (match.failed()) {
@@ -343,15 +372,9 @@ export function parseFunnier(source: string, origin?: string): AnnotatedModule {
         ? m.getRightmostFailurePosition()
         : null;
 
-    const message: string =
-      m.message ?? "Syntax error in Funnier module.";
+    const message: string = m.message ?? "Syntax error in Funnier module.";
 
-    throw new FunnyError(
-      message,
-      ErrorCode.ParseError,
-      pos?.lineNum,
-      pos?.colNum
-    );
+    throw new FunnyError(message, ErrorCode.ParseError, pos?.lineNum, pos?.colNum);
   }
 
   const mod = (semantics as FunnySemanticsExt)(match).parse();

@@ -10,8 +10,7 @@ export async function parseVerifyAndCompile(name: string, source: string) {
     const mod = await compileModule(ast, name);
     return new ExportWrapper(mod);
   } catch (e: any) {
-    console.error("=== parseVerifyAndCompile failed ===");
-    console.error(e?.stack ?? e);
+    console.error( e.message );
     throw e;
   }
 }

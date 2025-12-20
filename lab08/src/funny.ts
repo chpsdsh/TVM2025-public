@@ -16,11 +16,8 @@ export const enum ErrorCode {
     ArrayIndexMultiValue = 'E_ARRAY_INDEX_MULTI_VALUE',
     ComparisonMultiValue = 'E_COMPARISON_MULTI_VALUE',
     TypeMismatch = 'E_TYPE_MISMATCH',
+    VerificationFailed = 'E_VERIFICATION_FAILED',
 
-}
-
-export const enum ErrorCode {
-  VerificationFailed = 'E_VERIFICATION_FAILED',
 }
 
 export class FunnyError extends Error {
@@ -48,12 +45,14 @@ export interface FunctionDef {
     returns: ParameterDef[];
     locals: ParameterDef[];
     body: Statement;
+    loc?: Location;
 }
 
 export interface ParameterDef {
     kind: "param";
     name: string;
     typeName: "int" | "int[]";
+    loc?: Location;
 }
 
 export type Statement =
@@ -68,23 +67,28 @@ export type LValue = VarLValue | ArrLValue;
 export interface VarLValue {
     kind: "lvar";
     name: string;
+    loc?: Location;
 }
 
 export interface ArrLValue {
     kind: "larr";
     name: string;
     index: Expr;
+    loc?: Location;
 }
+
 
 export interface AssignStmt {
     kind: "assign";
-    targets: LValue[];   
-    exprs: Expr[];       
+    targets: LValue[];
+    exprs: Expr[];
+    loc?: Location;
 }
 
 export interface BlockStmt {
     kind: "block";
     stmts: Statement[];
+    loc?: Location;
 }
 
 export interface IfStmt {
@@ -92,35 +96,42 @@ export interface IfStmt {
     condition: Condition;
     then: Statement;
     else: Statement | null;
+    loc?: Location;
 }
 
 export interface WhileStmt {
     kind: "while";
     condition: Condition;
     body: Statement;
+    loc?: Location;
 }
 
 export interface ExprStmt {
     kind: "expr";
     expr: Expr;
+    loc?: Location;
 }
 
+
 export type Expr =
-    | arith.Expr        
+    | arith.Expr
     | FuncCallExpr
     | ArrAccessExpr;
 
 export interface FuncCallExpr {
-    kind: "funccall";
-    name: string;
-    args: Expr[];
+  kind: "funccall";
+  name: string;
+  args: Expr[];
+  loc?: Location;
 }
 
 export interface ArrAccessExpr {
-    kind: "arraccess";
-    name: string;
-    index: Expr;
+  kind: "arraccess";
+  name: string;
+  index: Expr;
+  loc?: Location;
 }
+
 
 export type Condition =
     | TrueCond
@@ -132,38 +143,54 @@ export type Condition =
     | ParenCond;
 
 export interface TrueCond {
-    kind: "true";
+  kind: "true";
+  loc?: Location;
 }
 
 export interface FalseCond {
-    kind: "false";
+  kind: "false";
+  loc?: Location;
 }
 
 export interface ComparisonCond {
-    kind: "comparison";
-    left: Expr;
-    op: "==" | "!=" | ">" | "<" | ">=" | "<=";
-    right: Expr;
+  kind: "comparison";
+  left: Expr;
+  op: "==" | "!=" | ">" | "<" | ">=" | "<=";
+  right: Expr;
+  loc?: Location;
 }
 
 export interface NotCond {
-    kind: "not";
-    condition: Condition;
+  kind: "not";
+  condition: Condition;
+  loc?: Location;
 }
 
 export interface AndCond {
-    kind: "and";
-    left: Condition;
-    right: Condition;
+  kind: "and";
+  left: Condition;
+  right: Condition;
+  loc?: Location;
 }
 
 export interface OrCond {
-    kind: "or";
-    left: Condition;
-    right: Condition;
+  kind: "or";
+  left: Condition;
+  right: Condition;
+  loc?: Location;
 }
 
 export interface ParenCond {
-    kind: "paren";
-    inner: Condition;
+  kind: "paren";
+  inner: Condition;
+  loc?: Location;
+}
+
+
+export interface Location {
+    file?: string;
+    startLine: number;
+    startCol: number;
+    endLine?: number;
+    endCol?: number;
 }
