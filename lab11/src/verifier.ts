@@ -13,7 +13,6 @@ import {
   FormulaRefPredicate,
 } from "../../lab10";
 
-
 import {
   Expr,
   Condition,
@@ -28,9 +27,8 @@ import {
   ArrAccessExpr,
   Location,
   FunnyError,
-  ErrorCode
+  ErrorCode,
 } from "../../lab08/src/funny";
-
 
 let z3Context: Context | null = null;
 let z3: Context;
@@ -49,7 +47,6 @@ export function flushZ3() {
   z3Context = null;
   recursiveAxiomsAdded.clear();
 }
-
 
 export interface VerificationResult {
   function: string;
@@ -73,24 +70,9 @@ function locToString(loc?: Location): string {
   return `${file}:${loc.startLine}:${loc.startCol}-${endLine}:${endCol}`;
 }
 
-
-function bestFuncLoc(func: any): Location | undefined {
-  return (func as any)?.loc ?? (func as any)?.body?.loc;
-}
-
-function andAll(ps: Predicate[]): Predicate {
-  if (ps.length === 0) return { kind: "true" };
-  let cur = ps[0];
-  for (let i = 1; i < ps.length; i++) {
-    cur = { kind: "and", left: cur, right: ps[i] } as any;
-  }
-  return simplifyPredicate(cur);
-}
-
 function readLocFromAny(obj: any): Location | undefined {
   if (!obj) return undefined;
 
-  // Most nodes store location as `loc?: Location`
   if (obj.loc && typeof obj.loc === "object") {
     const l = obj.loc;
     if (typeof l.startLine === "number" && typeof l.startCol === "number") {
@@ -98,7 +80,6 @@ function readLocFromAny(obj: any): Location | undefined {
     }
   }
 
-  // Some code may store startLine/startCol directly on the object
   if (typeof obj.startLine === "number" && typeof obj.startCol === "number") {
     const loc: Location = { file: obj.file, startLine: obj.startLine, startCol: obj.startCol };
     if (typeof obj.endLine === "number") loc.endLine = obj.endLine;
@@ -109,104 +90,102 @@ function readLocFromAny(obj: any): Location | undefined {
   return undefined;
 }
 
-// Recursively find the first location inside an Expr tree (deepest-first-ish).
-function getLocFromExpr(expr: Expr): Location | undefined {
-  if (!expr) return undefined;
 
-  const direct = readLocFromAny(expr as any);
-  if (direct) return direct;
+function isTrivialLoc(loc?: Location): boolean {
+  if (!loc) return true;
+  const endLine = loc.endLine ?? loc.startLine;
+  const endCol = loc.endCol ?? loc.startCol;
+  return loc.startLine === 1 && loc.startCol === 1 && endLine === 1 && endCol === 1;
+}
 
-  const k = (expr as any).kind;
-  switch (k) {
-    case "Num":
-    case "Var":
-      return direct;
+function findBestLocDeep(node: any): Location | undefined {
+  if (!node) return undefined;
 
+  const here = readLocFromAny(node);
+  if (here && !isTrivialLoc(here)) return here;
+
+  switch (node.kind) {
     case "Neg":
-      return getLocFromExpr((expr as any).expr) ?? direct;
+      return findBestLocDeep(node.expr) ?? here;
 
     case "Add":
     case "Sub":
     case "Mul":
     case "Div":
-      return (
-        getLocFromExpr((expr as any).left) ??
-        getLocFromExpr((expr as any).right) ??
-        direct
-      );
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
 
     case "funccall": {
-      const args: Expr[] = ((expr as any).args ?? []) as Expr[];
-      for (const a of args) {
-        const r = getLocFromExpr(a);
+      for (const a of node.args ?? []) {
+        const r = findBestLocDeep(a);
         if (r) return r;
       }
-      return direct;
+      return here;
     }
 
     case "arraccess":
-      return getLocFromExpr((expr as any).index) ?? direct;
+      return findBestLocDeep(node.index) ?? here;
+
+    case "comparison":
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
+
+    case "and":
+    case "or":
+      return findBestLocDeep(node.left) ?? findBestLocDeep(node.right) ?? here;
+
+    case "not":
+      return findBestLocDeep(node.inner ?? node.predicate) ?? here;
+
+    case "paren":
+      return findBestLocDeep(node.inner) ?? here;
+
+    case "implies":
+      return findBestLocDeep(node.right) ?? findBestLocDeep(node.left) ?? here;
+
+    case "quantifier":
+      return findBestLocDeep(node.predicate) ?? here;
+
+    case "formulaRef": {
+      for (const a of node.args ?? []) {
+        const r = findBestLocDeep(a);
+        if (r) return r;
+      }
+      return here;
+    }
 
     default:
-      // Unknown expression node; best effort
-      return direct;
+      return here;
   }
 }
 
-// Recursively find the first location inside a Predicate tree.
-function getLocFromPredicate(pred: Predicate|undefined): Location | undefined {
-  if (!pred) return undefined;
-
-  const direct = readLocFromAny(pred as any);
-  if (direct) return direct;
-
-  switch ((pred as any).kind) {
-    case "true":
-    case "false":
-      return direct;
-
-    case "comparison": {
-      const c = pred as any as ComparisonPredicate;
-      return getLocFromExpr(c.left) ?? getLocFromExpr(c.right) ?? direct;
-    }
-
-    case "and":
-    case "or": {
-      const l = (pred as any).left as Predicate;
-      const r = (pred as any).right as Predicate;
-      return getLocFromPredicate(l) ?? getLocFromPredicate(r) ?? direct;
-    }
-
-    case "not": {
-      const inner = (pred as any).inner ?? (pred as any).predicate;
-      return getLocFromPredicate(inner) ?? direct;
-    }
-
-    case "paren":
-      return getLocFromPredicate((pred as any).inner) ?? direct;
-
-    case "implies":
-      return (
-        getLocFromPredicate((pred as any).right) ??
-        getLocFromPredicate((pred as any).left) ??
-        direct
-      );
-
-    case "quantifier":
-      return readLocFromAny(pred as any) ?? getLocFromPredicate((pred as any).predicate) ?? direct;
-
-    case "formulaRef": {
-      const args: Expr[] = ((pred as any).args ?? []) as Expr[];
-      for (const a of args) {
-        const r = getLocFromExpr(a);
-        if (r) return r;
-      }
-      return direct;
-    }
-
-    default:
-      return direct;
+function pickBestLoc(...locs: Array<Location | undefined>): Location | undefined {
+  for (const l of locs) {
+    if (l && !isTrivialLoc(l)) return l;
   }
+  for (const l of locs) {
+    if (l) return l;
+  }
+  return undefined;
+}
+
+function getLocFromPredicate(pred: Predicate | undefined): Location | undefined {
+  return findBestLocDeep(pred);
+}
+
+function inferFileFromFunc(func: any): string | undefined {
+  return (
+    readLocFromAny(func)?.file ??
+    readLocFromAny(func?.body)?.file ??
+    readLocFromAny(func?.requires)?.file ??
+    readLocFromAny(func?.ensures)?.file ??
+    undefined
+  );
+}
+
+function ensureFile(loc: Location | undefined, file: string | undefined): Location | undefined {
+  if (!loc) return loc;
+  if (loc.file && loc.file.length > 0) return loc;
+  if (!file) return loc;
+  return { ...loc, file };
 }
 
 export async function verifyModule(module: AnnotatedModule): Promise<VerificationResult[]> {
@@ -225,16 +204,20 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
         continue;
       }
 
-      
-
       const vcs = buildFunctionVerificationConditions(func, module);
       const env = buildEnvironment(func, z3);
       const z3VC = convertPredicateToZ3(vcs, env, z3, module, solver);
 
-      const vcLocFromPred = getLocFromPredicate(vcs);
-      const vcLocFromPost = getLocFromPredicate(func.ensures);
-      const funcLoc = readLocFromAny(func);
-      const vcLoc = vcLocFromPost  ??vcLocFromPred  ??funcLoc;
+      const inferredFile = inferFileFromFunc(func);
+
+      const vcLocRaw = pickBestLoc(
+        getLocFromPredicate(vcs),
+        func.ensures ? findBestLocDeep(func.ensures) : undefined,
+        func.requires ? findBestLocDeep(func.requires) : undefined,
+        readLocFromAny(func)
+      );
+
+      const vcLoc = ensureFile(vcLocRaw, inferredFile);
       const proof = await proveTheorem(z3VC, solver);
       const verified = proof.result === "unsat";
 
@@ -251,40 +234,32 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
       });
 
       if (!verified) {
-        
-           const msg =
-                `${locToString(vcLoc)} ` +
-                `Function: ${func.name}\n` ;
+        const msg = `${locToString(vcLoc)} ` + `Function: ${func.name}\n`;
 
         firstFailure = new FunnyError(
-                msg,
-                ErrorCode.VerificationFailed,
-                vcLoc?.startLine,
-                vcLoc?.startCol,
-                vcLoc?.endCol,
-                vcLoc?.endLine
-              );
-        }
+          msg,
+          ErrorCode.VerificationFailed,
+          vcLoc?.startLine,
+          vcLoc?.startCol,
+          vcLoc?.endCol,
+          vcLoc?.endLine
+        );
       }
-     catch (e: any) {
+    } catch (e: any) {
       results.push({
         function: (func as any).name,
         verified: false,
         error: String(e?.message ?? e),
       });
-
-     
     }
   }
 
- if (firstFailure) {
+  if (firstFailure) {
     throw firstFailure;
   }
 
-
   return results;
 }
-
 
 function stmtHasInvariant(stmt: any): boolean {
   if (!stmt) return false;
@@ -345,7 +320,6 @@ function hasXDecrementAfterWhile(stmt: any): boolean {
   return false;
 }
 
-
 async function proveTheorem(
   theorem: Bool,
   solver: any
@@ -356,7 +330,6 @@ async function proveTheorem(
   if (r === "unsat") return { result: "unsat" };
   return { result: "unknown" };
 }
-
 
 function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
   const env: Env = new Map();
@@ -378,7 +351,6 @@ function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
   return env;
 }
 
-
 function buildFunctionVerificationConditions(func: AnnotatedFunction, module: AnnotatedModule): Predicate {
   const pre: Predicate = func.requires ?? { kind: "true" };
   const post: Predicate = func.ensures ?? { kind: "true" };
@@ -397,8 +369,6 @@ function buildFunctionVerificationConditions(func: AnnotatedFunction, module: An
   const wpBody = computeWP(func.body as any, post, module);
   return { kind: "implies", left: pre, right: wpBody } as any;
 }
-
-
 
 function computeWP(stmt: any, post: Predicate, module: AnnotatedModule): Predicate {
   switch (stmt.kind) {
@@ -488,6 +458,10 @@ function computeWPAssignment(assign: AssignStmt, post: Predicate): Predicate {
     }
   }
 
+  if ((assign as any).loc && !readLocFromAny(cur)) {
+    (cur as any).loc = (assign as any).loc;
+  }
+
   return cur;
 }
 
@@ -517,7 +491,6 @@ function convertConditionToPredicate(c: Condition): Predicate {
       return { kind: "paren", inner: convertConditionToPredicate((c as any).inner) } as any;
   }
 }
-
 
 function simplifyPredicate(p: Predicate): Predicate {
   switch ((p as any).kind) {
@@ -558,7 +531,6 @@ function simplifyPredicate(p: Predicate): Predicate {
       return p;
   }
 }
-
 
 function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr): Predicate {
   switch ((pred as any).kind) {
@@ -610,7 +582,7 @@ function substituteVarInPredicate(pred: Predicate, varName: string, subst: Expr)
 
     case "quantifier": {
       const q = pred as any as QuantifierPredicate;
-      if (q.variable.name === varName) return pred; 
+      if (q.variable.name === varName) return pred;
       return { ...q, predicate: substituteVarInPredicate(q.predicate, varName, subst) } as any;
     }
 
@@ -661,7 +633,6 @@ function substituteVarInExpr(expr: Expr, varName: string, subst: Expr): Expr {
       return expr;
   }
 }
-
 
 function substituteArrayAccessInPredicate(pred: Predicate, acc: ArrAccessExpr, subst: Expr): Predicate {
   switch ((pred as any).kind) {
@@ -794,7 +765,6 @@ function exprEquals(a: Expr, b: Expr): boolean {
   }
 }
 
-
 function convertPredicateToZ3(predicate: Predicate, env: Env, z3: Context, module: AnnotatedModule, solver: any): Bool {
   switch ((predicate as any).kind) {
     case "true":
@@ -895,7 +865,6 @@ function convertFormulaRefToZ3(fr: FormulaRefPredicate, env: Env, z3: Context, m
   return convertPredicateToZ3(f.body as any, env2, z3, module, solver);
 }
 
-
 function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedModule, solver: any): Arith {
   const k = (expr as any).kind;
 
@@ -976,7 +945,6 @@ function convertExprToZ3(expr: Expr, env: Env, z3: Context, module: AnnotatedMod
       throw new Error(`convertExprToZ3: unknown expr.kind '${k}'`);
   }
 }
-
 
 function addFunctionEnsuresAxiom(name: string, args: Arith[], result: Arith, z3: Context, module: AnnotatedModule, solver: any) {
   const f = module.functions.find((fn) => fn.name === name);

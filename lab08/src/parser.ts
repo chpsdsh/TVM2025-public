@@ -29,7 +29,10 @@ type PosInfo = {
 // Save current filename so every Location can include it.
 let currentFile: string | undefined = undefined;
 
-function tryGetLineCol(src: any, idx: number): { lineNum: number; colNum: number } | null {
+function tryGetLineCol(
+  src: any,
+  idx: number
+): { lineNum: number; colNum: number } | null {
   try {
     // ohm-js Source has getLineAndColumn(idx)
     if (src && typeof src.getLineAndColumn === "function") {
@@ -39,6 +42,54 @@ function tryGetLineCol(src: any, idx: number): { lineNum: number; colNum: number
     // ignore
   }
   return null;
+}
+
+export function intervalToLoc(interval: any): ast.Location {
+  // 1) Найти "source", у которого есть getLineAndColumn
+  const src =
+    interval?.source?.getLineAndColumn
+      ? interval.source
+      : interval?._node?.source?.getLineAndColumn
+        ? interval._node.source
+        : interval?.getLineAndColumn
+          ? interval
+          : undefined;
+
+  // 2) Найти startIdx/endIdx (они чаще всего лежат в interval.source, но иногда в interval._node.source)
+  const startIdx: number =
+    interval?.startIdx ??
+    interval?.source?.startIdx ??
+    interval?._node?.source?.startIdx ??
+    0;
+
+  const rawEndIdx: number =
+    interval?.endIdx ??
+    interval?.source?.endIdx ??
+    interval?._node?.source?.endIdx ??
+    startIdx;
+
+  // В Ohm endIdx обычно "one past the end", поэтому берём последний символ: endIdx - 1
+  const endIdx: number = Math.max(startIdx, rawEndIdx - 1);
+
+  // 3) Перевести индексы в line/col
+  const start =
+    typeof src?.getLineAndColumn === "function"
+      ? src.getLineAndColumn(startIdx)
+      : { lineNum: 1, colNum: 1 };
+
+  const end =
+    typeof src?.getLineAndColumn === "function"
+      ? src.getLineAndColumn(endIdx)
+      : { lineNum: start.lineNum, colNum: start.colNum };
+
+  // 4) Собрать Location (используем ВСЕ поля)
+  return {
+    file: currentFile,
+    startLine: start.lineNum,
+    startCol: start.colNum,
+    endLine: end.lineNum,
+    endCol: end.colNum,
+  };
 }
 
 function mkLoc(nodeOrThis: any): ast.Location | undefined {
@@ -65,10 +116,9 @@ function mkLoc(nodeOrThis: any): ast.Location | undefined {
 }
 
 function withLoc<T extends object>(nodeOrThis: any, obj: T): T {
-  const loc = mkLoc(nodeOrThis);
+  const loc = intervalToLoc(nodeOrThis);
   return loc ? ({ ...(obj as any), loc } as T) : obj;
 }
-
 
 export function fail(
   code: ErrorCode,
@@ -416,11 +466,12 @@ function repeatPrefix<T>(
 }
 
 function makeComparisonNode(
+  nodeOrThis: any,
   leftNode: any,
   rightNode: any,
   op: ast.ComparisonCond["op"]
 ): ast.ComparisonCond {
-  return withLoc(leftNode, {
+  return withLoc(nodeOrThis, {
     kind: "comparison",
     left: leftNode.parse() as ast.Expr,
     op,
@@ -688,7 +739,7 @@ export const getFunnyAst: FunnyActionDict<any> = {
 
   Comparison(left: any, op: any, right: any) {
     const opStr = op.sourceString as ast.ComparisonCond["op"];
-    return makeComparisonNode(left, right, opStr);
+    return makeComparisonNode(this, left, right, opStr);
   },
 };
 

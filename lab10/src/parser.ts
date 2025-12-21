@@ -86,8 +86,56 @@ function mkLoc(nodeOrThis: any): Location | undefined {
   };
 }
 
+export function intervalToLoc(interval: any): Location {
+  // 1) Найти "source", у которого есть getLineAndColumn
+  const src =
+    interval?.source?.getLineAndColumn
+      ? interval.source
+      : interval?._node?.source?.getLineAndColumn
+        ? interval._node.source
+        : interval?.getLineAndColumn
+          ? interval
+          : undefined;
+
+  // 2) Найти startIdx/endIdx (они чаще всего лежат в interval.source, но иногда в interval._node.source)
+  const startIdx: number =
+    interval?.startIdx ??
+    interval?.source?.startIdx ??
+    interval?._node?.source?.startIdx ??
+    0;
+
+  const rawEndIdx: number =
+    interval?.endIdx ??
+    interval?.source?.endIdx ??
+    interval?._node?.source?.endIdx ??
+    startIdx;
+
+  // В Ohm endIdx обычно "one past the end", поэтому берём последний символ: endIdx - 1
+  const endIdx: number = Math.max(startIdx, rawEndIdx - 1);
+
+  // 3) Перевести индексы в line/col
+  const start =
+    typeof src?.getLineAndColumn === "function"
+      ? src.getLineAndColumn(startIdx)
+      : { lineNum: 1, colNum: 1 };
+
+  const end =
+    typeof src?.getLineAndColumn === "function"
+      ? src.getLineAndColumn(endIdx)
+      : { lineNum: start.lineNum, colNum: start.colNum };
+
+  // 4) Собрать Location (используем ВСЕ поля)
+  return {
+    file: currentFile,
+    startLine: start.lineNum,
+    startCol: start.colNum,
+    endLine: end.lineNum,
+    endCol: end.colNum,
+  };
+}
+
 function withLoc<T extends object>(nodeOrThis: any, obj: T): T {
-  const loc = mkLoc(nodeOrThis);
+  const loc = intervalToLoc(nodeOrThis);
   return loc ? ({ ...(obj as any), loc } as T) : obj;
 }
 
