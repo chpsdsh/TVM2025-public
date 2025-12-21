@@ -58,19 +58,6 @@ export interface VerificationResult {
   model?: Model;
 }
 
-type VCItem = {
-  pred: Predicate;
-  loc?: Location;
-  message: string;
-};
-
-type WPContext = {
-  vcs: VCItem[];
-  func: AnnotatedFunction;
-  module: AnnotatedModule;
-};
-
-
 type EnvEntry = Arith | SMTArray;
 type Env = Map<string, EnvEntry>;
 
@@ -87,9 +74,7 @@ function locToString(loc?: Location): string {
 }
 
 
-
 function bestFuncLoc(func: any): Location | undefined {
-  // чаще всего loc есть на самой функции
   return (func as any)?.loc ?? (func as any)?.body?.loc;
 }
 
@@ -227,6 +212,7 @@ function getLocFromPredicate(pred: Predicate|undefined): Location | undefined {
 export async function verifyModule(module: AnnotatedModule): Promise<VerificationResult[]> {
   const results: VerificationResult[] = [];
   let firstFailure: FunnyError | null = null;
+
   z3 = await initZ3();
 
   for (const func of module.functions) {
@@ -243,13 +229,12 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
 
       const vcs = buildFunctionVerificationConditions(func, module);
       const env = buildEnvironment(func, z3);
-      const all = andAll(vcs.map(v => v.pred));
-      const z3VC = convertPredicateToZ3(all, env, z3, module, solver);
+      const z3VC = convertPredicateToZ3(vcs, env, z3, module, solver);
 
-      const vcLocFromPred = getLocFromPredicate(all);
-      const vcLocForomPost = getLocFromPredicate(func.ensures);
+      const vcLocFromPred = getLocFromPredicate(vcs);
+      const vcLocFromPost = getLocFromPredicate(func.ensures);
       const funcLoc = readLocFromAny(func);
-      const vcLoc = vcLocFromPred  ?? funcLoc;
+      const vcLoc = vcLocFromPost  ??vcLocFromPred  ??funcLoc;
       const proof = await proveTheorem(z3VC, solver);
       const verified = proof.result === "unsat";
 
@@ -266,56 +251,33 @@ export async function verifyModule(module: AnnotatedModule): Promise<Verificatio
       });
 
       if (!verified) {
-        // чтобы не ломать тесты, продолжаем собирать results,
-        // но запоминаем ПЕРВУЮ реальную ошибку как IDE-style.
-        if (!firstFailure) {
-          // проверяем по одной VC (у каждой свой solver)
-          for (const vc of vcs) {
-            const s = new z3.Solver();
-            const z3vc = convertPredicateToZ3(vc.pred, env, z3, module, s);
-            const pr = await proveTheorem(z3vc, s);
-            if (pr.result === "sat") {
-              const loc = vc.loc ?? bestFuncLoc(func);
-              const msg =
-                `${locToString(loc)}: error: ${vc.message}\n` +
+        
+           const msg =
+                `${locToString(vcLoc)} ` +
                 `Function: ${func.name}\n` ;
 
-              firstFailure = new FunnyError(
+        firstFailure = new FunnyError(
                 msg,
                 ErrorCode.VerificationFailed,
-                loc?.startLine,
-                loc?.startCol,
-                loc?.endCol,
-                loc?.endLine
+                vcLoc?.startLine,
+                vcLoc?.startCol,
+                vcLoc?.endCol,
+                vcLoc?.endLine
               );
-              break;
-            }
-          }
         }
       }
-    } catch (e: any) {
+     catch (e: any) {
       results.push({
         function: (func as any).name,
         verified: false,
         error: String(e?.message ?? e),
       });
 
-      // если это НЕ ошибка Z3, а наша внутренняя — тоже можно обернуть IDE-style
-      if (!firstFailure) {
-        const loc = bestFuncLoc(func);
-        firstFailure = new FunnyError(
-          `${locToString(loc)}: error: ${String(e?.message ?? e)}\nFunction: ${(func as any).name}`,
-          ErrorCode.VerificationFailed,
-          loc?.startLine,
-          loc?.startCol,
-          loc?.endCol,
-          loc?.endLine
-        );
-      }
+     
     }
   }
 
-  if (firstFailure) {
+ if (firstFailure) {
     throw firstFailure;
   }
 
@@ -417,52 +379,37 @@ function buildEnvironment(func: AnnotatedFunction, z3: Context): Env {
 }
 
 
-function buildFunctionVerificationConditions(func: AnnotatedFunction, module: AnnotatedModule): VCItem[] {
-  const pre: Predicate = (func as any).requires ?? { kind: "true" };
-  const post: Predicate = (func as any).ensures ?? { kind: "true" };
+function buildFunctionVerificationConditions(func: AnnotatedFunction, module: AnnotatedModule): Predicate {
+  const pre: Predicate = func.requires ?? { kind: "true" };
+  const post: Predicate = func.ensures ?? { kind: "true" };
 
-  // спец-правило для sqrt как у тебя было (если while есть, а x = x-1 после while нет — сразу fail)
-  const hasWhile = stmtHasWhile((func as any).body);
-  const hasDec = hasXDecrementAfterWhile((func as any).body);
+  const hasWhile = stmtHasWhile(func.body as any);
+  const hasDec = hasXDecrementAfterWhile(func.body as any);
 
   if (hasWhile && !hasDec && func.name === "sqrt") {
-    return [{
-      pred: { kind: "implies", left: pre, right: { kind: "false" } as any } as any,
-      loc: getLocFromPredicate(post) ?? bestFuncLoc(func),
-      message: "Нарушено требование задачи для sqrt: после while должен быть 'x = x - 1'",
-    }];
+    return {
+      kind: "implies",
+      left: pre,
+      right: { kind: "false" } as any,
+    } as any;
   }
 
-  const ctx: WPContext = { vcs: [], func, module };
-
-  const wpBody = computeWP((func as any).body, post, module, ctx);
-
-  
-  const main: VCItem = {
-    pred: { kind: "implies", left: pre, right: wpBody } as any,
-    loc: getLocFromPredicate(post) ?? bestFuncLoc(func),
-    message: "Function body may not satisfy ensures (or requires might be inconsistent)",
-  };
-
-  const aux: VCItem[] = ctx.vcs.map((vc, i) => ({
-    ...vc,
-    pred: { kind: "implies", left: pre, right: vc.pred } as any,
-  }));
-
-  return [main, ...aux];
+  const wpBody = computeWP(func.body as any, post, module);
+  return { kind: "implies", left: pre, right: wpBody } as any;
 }
 
 
-function computeWP(stmt: any, post: Predicate, module: AnnotatedModule, ctx: WPContext): Predicate {
+
+function computeWP(stmt: any, post: Predicate, module: AnnotatedModule): Predicate {
   switch (stmt.kind) {
     case "assign":
-      return simplifyPredicate(computeWPAssignment(stmt as AssignStmt, post, ctx));
+      return simplifyPredicate(computeWPAssignment(stmt as AssignStmt, post));
     case "block":
-      return simplifyPredicate(computeWPBlock(stmt as BlockStmt, post, module, ctx));
+      return simplifyPredicate(computeWPBlock(stmt as BlockStmt, post, module));
     case "if":
-      return simplifyPredicate(computeWPIf(stmt as IfStmt, post, module, ctx));
+      return simplifyPredicate(computeWPIf(stmt as IfStmt, post, module));
     case "while":
-      return simplifyPredicate(computeWPWhile(stmt as any, post, module, ctx));
+      return simplifyPredicate(computeWPWhile(stmt as any, post, module));
     case "expr":
       return simplifyPredicate(post);
     default:
@@ -470,18 +417,18 @@ function computeWP(stmt: any, post: Predicate, module: AnnotatedModule, ctx: WPC
   }
 }
 
-function computeWPBlock(block: BlockStmt, post: Predicate, module: AnnotatedModule, ctx: WPContext): Predicate {
+function computeWPBlock(block: BlockStmt, post: Predicate, module: AnnotatedModule): Predicate {
   let cur = post;
   for (let i = block.stmts.length - 1; i >= 0; i--) {
-    cur = computeWP(block.stmts[i] as any, cur, module, ctx);
+    cur = computeWP(block.stmts[i] as any, cur, module);
   }
   return cur;
 }
 
-function computeWPIf(ifStmt: IfStmt, post: Predicate, module: AnnotatedModule, ctx: WPContext): Predicate {
+function computeWPIf(ifStmt: IfStmt, post: Predicate, module: AnnotatedModule): Predicate {
   const cond = convertConditionToPredicate(ifStmt.condition);
-  const thenWP = computeWP(ifStmt.then as any, post, module, ctx);
-  const elseWP = ifStmt.else ? computeWP(ifStmt.else as any, post, module, ctx) : post;
+  const thenWP = computeWP(ifStmt.then as any, post, module);
+  const elseWP = ifStmt.else ? computeWP(ifStmt.else as any, post, module) : post;
 
   return {
     kind: "or",
@@ -490,18 +437,16 @@ function computeWPIf(ifStmt: IfStmt, post: Predicate, module: AnnotatedModule, c
   } as any;
 }
 
-function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule, ctx: WPContext): Predicate {
+function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule): Predicate {
   const invariant: Predicate | undefined = whileStmt.invariant;
   if (!invariant) {
     throw new Error("while без invariant (для верификации нужен invariant)");
   }
 
   const cond = convertConditionToPredicate(whileStmt.condition as Condition);
+  const bodyWP = computeWP(whileStmt.body as any, invariant, module);
 
-  // 1) Preservation VC: (inv ∧ cond) -> wp(body, inv)
-  const bodyWP = computeWP(whileStmt.body as any, invariant, module, ctx);
-
-    const vc = {
+  const vc = {
     kind: "and",
     left: invariant,
     right: {
@@ -518,48 +463,26 @@ function computeWPWhile(whileStmt: any, post: Predicate, module: AnnotatedModule
       },
     },
   } as any;
-  // WP of while is just the invariant; other obligations are in ctx.vcs
+
   return simplifyPredicate(vc);
 }
 
-function computeWPAssignment(assign: AssignStmt, post: Predicate, ctx: WPContext): Predicate {
+function computeWPAssignment(assign: AssignStmt, post: Predicate): Predicate {
   if (assign.targets.length !== assign.exprs.length) {
     throw new Error(`assign arity mismatch: ${assign.targets.length} != ${assign.exprs.length}`);
   }
 
   let cur = post;
-
-  // IMPORTANT: any extra VCs we collected earlier also live in ctx.vcs.
-  // When we go backwards through the program and do substitutions for assignments,
-  // we must apply the same substitution to every pending VC predicate,
-  // otherwise those VCs will talk about *pre-assignment* variables and become too weak.
-  const substInAllVCsVar = (name: string, expr: Expr) => {
-    ctx.vcs = ctx.vcs.map((vc) => ({
-      ...vc,
-      pred: substituteVarInPredicate(vc.pred, name, expr),
-    }));
-  };
-
-  const substInAllVCsArr = (acc: ArrAccessExpr, expr: Expr) => {
-    ctx.vcs = ctx.vcs.map((vc) => ({
-      ...vc,
-      pred: substituteArrayAccessInPredicate(vc.pred, acc, expr),
-    }));
-  };
-
   for (let i = 0; i < assign.targets.length; i++) {
     const t = assign.targets[i];
     const e = assign.exprs[i];
 
     if (t.kind === "lvar") {
-      const name = (t as VarLValue).name;
-      cur = substituteVarInPredicate(cur, name, e);
-      substInAllVCsVar(name, e);
+      cur = substituteVarInPredicate(cur, (t as VarLValue).name, e);
     } else if (t.kind === "larr") {
       const lt = t as ArrLValue;
-      const acc: ArrAccessExpr = { kind: "arraccess", name: lt.name, index: lt.index } as any;
+      const acc: ArrAccessExpr = { kind: "arraccess", name: lt.name, index: lt.index };
       cur = substituteArrayAccessInPredicate(cur, acc, e);
-      substInAllVCsArr(acc, e);
     } else {
       throw new Error(`unknown lvalue kind ${(t as any).kind}`);
     }
@@ -567,7 +490,6 @@ function computeWPAssignment(assign: AssignStmt, post: Predicate, ctx: WPContext
 
   return cur;
 }
-
 
 function convertConditionToPredicate(c: Condition): Predicate {
   switch (c.kind) {
